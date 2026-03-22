@@ -14,9 +14,15 @@ add_executable(Anima WIN32
     # Entry point
     ../apps/main.cpp
 
-    # Core source files
-    
+    # Core
     core/Engine.cpp
+
+    # Drawing system
+    core/Canvas.cpp
+    core/Viewport.cpp
+    core/InputHandler.cpp
+
+    # UI
     ui/Styles.cpp
 
     # Resources
@@ -26,17 +32,18 @@ add_executable(Anima WIN32
     ../extern/imgui_impl_sdl2.cpp
     ../extern/imgui_impl_opengl3.cpp
 )
-
 target_include_directories(Anima PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
 )
 
 target_link_libraries(Anima PRIVATE
     imgui::imgui
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    SDL2::SDL2
     glm::glm
     nlohmann_json::nlohmann_json
     opengl32
