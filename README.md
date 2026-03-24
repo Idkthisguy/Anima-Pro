@@ -14,5 +14,5 @@ Anima Pro is a version of [Anima](https://github.com/Idkthisguy/Anima), made wit
 - Code-writer
 - Desktop Tester
 
-### Ivan (ivagaguaig-source)
+### Ivan
 - Code-writer
