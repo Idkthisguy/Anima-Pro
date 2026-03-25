@@ -1,3 +1,4 @@
+#include <SDL.h>
 #include "Anima.h"
 
 int main(int argc, char* argv[]) {
