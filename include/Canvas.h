@@ -74,7 +74,7 @@ namespace Anima {
 
         // Blend src color+opacity onto dst using standard alpha compositing
         // Ivan: this is why brush strokes don't just stamp opaque squares
-        Pixel BlendPixel(Pixel dst, uint8_t r, uint8_t g, uint8_t b, float opacity);
+        void BlendPixel(int x, int y, Pixel src);
     };
 
 } // namespace Anima

@@ -2,8 +2,9 @@
 
 project(Anima)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(imgui CONFIG REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
@@ -18,12 +19,12 @@ add_executable(Anima WIN32
     core/Engine.cpp
 
     # Drawing system
-    core/Canvas.cpp
-    core/Viewport.cpp
+    "ui/Canvas.cpp"
+    ui/Viewport.cpp
     core/InputHandler.cpp
 
     # UI
-    ui/Styles.cpp
+    "ui/Styles.cpp"
 
     # Resources
     resources/resources.rc
@@ -31,7 +32,7 @@ add_executable(Anima WIN32
     # imgui backends
     ../extern/imgui_impl_sdl2.cpp
     ../extern/imgui_impl_opengl3.cpp
-)
+ "timeline/Timeline.cpp"  )
 target_include_directories(Anima PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern

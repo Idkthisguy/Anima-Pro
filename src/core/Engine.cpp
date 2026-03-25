@@ -1,16 +1,21 @@
 // --- LIBRARIES ---
-#include "Anima.h"
 #include <SDL.h> // helps make the window and handle input
 #include <SDL_opengl.h> // renders the window
 #include "imgui.h" // the UI library
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
+#include "Engine.h"
 // ---------------------
 
 namespace Anima {
 	struct Engine::internalGears {
 		SDL_Window* window = nullptr;
 		SDL_GLContext glContext = nullptr;
+
+        float idleTime = 0.0f;
+        bool highMemoryMode = true;
+        bool isPowerSaving = false;
+        unsigned int canvasTextureID = 0;
 	};
 
 	Engine::Engine() : m_KeepRunning(false) {
@@ -89,5 +94,60 @@ namespace Anima {
         m_KeepRunning = false;
     }
 
+    void Engine::freeUnusedMemory() {
+        if (m_Gears->isPowerSaving) return;
 
+        // saveToTempCache("temp_session.bak"); // (You'll implement this later)
+
+        // The Swap Trick to instantly delete memory
+        // std::vector<std::vector<Pixel>>().swap(undoStack);
+        // std::vector<Pixel>().swap(currentCanvasPixels);
+
+        if (m_Gears->canvasTextureID != 0) {
+            glDeleteTextures(1, &m_Gears->canvasTextureID);
+            m_Gears->canvasTextureID = 0;
+        }
+
+        m_Gears->isPowerSaving = true;
+        printf("Anima: Memory Released. Entering Sleep Mode.\n");
+    }
+
+    void Engine::reloadResources() {
+        if (!m_Gears->isPowerSaving) return;
+
+        // currentCanvasPixels.clear();
+        // loadFromTempCacheDirectlyInto(currentCanvasPixels);
+        // m_Gears->canvasTextureID = createTextureFromPixels(currentCanvasPixels);
+
+        m_Gears->isPowerSaving = false;
+        printf("Anima: Waking up! Reload complete.\n");
+    }
+
+    void Engine::update(float deltaTime) {
+        ImGuiIO& io = ImGui::GetIO();
+
+        bool userActive = (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || io.InputQueueCharacters.Size > 0 || io.MouseDown[0]);
+
+        if (userActive) {
+            m_Gears->idleTime = 0.0f;
+            if (!m_Gears->highMemoryMode) {
+                m_Gears->highMemoryMode = true;
+                reloadResources();
+                SDL_GL_SetSwapInterval(1); // Turn VSync back on
+            }
+        }
+        else {
+            m_Gears->idleTime += deltaTime;
+        }
+
+        if (m_Gears->idleTime > 5.0f && m_Gears->highMemoryMode) {
+            m_Gears->highMemoryMode = false;
+            freeUnusedMemory();
+            SDL_GL_SetSwapInterval(0); // Drop framerate to save laptop battery
+        }
+
+        if (!m_Gears->highMemoryMode) {
+            SDL_Delay(100); // Sleep for 100ms so the CPU rests
+        }
+    }
 }

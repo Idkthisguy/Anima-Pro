@@ -1,13 +1,9 @@
-﻿// ALL COMMENTS ARE FOR IVAN — LEARNING C++ WITH ME
-// Styles.cpp — UI layout + drawing input
-// This file calls Canvas and Viewport to do actual work.
-// It just handles the "what did the user do with the mouse" part.
-
-#include "Anima.h"
+﻿#include "Anima.h"
 #include "imgui.h"
 #include "Canvas.h"
 #include "Viewport.h"
 #include "InputHandler.h"
+#include "Timeline.h"
 #include <string>
 #include <vector>
 #include <cmath>
@@ -17,754 +13,567 @@ using namespace std;
 
 namespace Anima {
 
-    // The canvas — our drawing surface
-    static Canvas    g_Canvas;
-    static bool      g_CanvasInited = false;
-
-    // Viewport — handles pan/zoom math
-    static Viewport  g_Viewport;
-    static bool      g_ViewportFitted = false; // fit once on startup
-
-    // Input handler — keyboard shortcuts
+    static Timeline     g_TL;
+    static Viewport     g_VP;
     static InputHandler g_Input;
+    static bool         g_VPFitted = false;
 
-    // ── Tool state ──
-    static int       g_SelectedTool = 0;  // 0=brush 1=eraser 2=bucket 3=eyedropper
-    static float     g_BrushSize = 8.0f;
-    static float     g_Opacity = 1.0f;
-    static float     g_Smoothing = 0.5f;
-    static ImVec4    g_DrawColor = { 0.06f, 0.06f, 0.06f, 1.0f };
+    static int   g_Tool = 0;
+    static float g_BrushSize = 8.0f;
+    static float g_Opacity = 1.0f;
+    static ImVec4 g_Color = { 0.05f, 0.05f, 0.05f, 1.0f };
 
-    // ── Stroke state ──
-    // We track whether the user is currently dragging to draw
-    // so we can interpolate between mouse positions (no gaps in strokes)
-    static bool      g_IsDrawing = false;
-    static ImVec2    g_LastDrawPos = { -1, -1 };  // last canvas pos we painted
+    static bool   g_Drawing = false;
+    static ImVec2 g_LastDrawPos = { -1, -1 };
 
-    // Dirty rect — the region of the canvas modified since last upload
-    // We only upload that region to the GPU, not the whole canvas
-    static int g_DirtyX0 = 0, g_DirtyY0 = 0;
-    static int g_DirtyX1 = 0, g_DirtyY1 = 0;
-    static bool g_HasDirty = false;
+    static int  g_DX0 = 0, g_DY0 = 0, g_DX1 = 0, g_DY1 = 0;
+    static bool g_Dirty = false;
 
-    // ── Undo stack ──
-    // Each entry is a full copy of the canvas pixels
-    // this is simple but memory-hungry for large canvases.
-    static vector<vector<Pixel>> g_UndoStack;
-    static vector<vector<Pixel>> g_RedoStack;
-    static const int MAX_UNDO = 30;
-
-    // ── Timeline state ──
-    static int       g_TotalFrames = 60;
-    static int       g_CurrentFrame = 0;
-    static int       g_FPS = 12;
-    static bool      g_Playing = false;
-    static bool      g_Looping = true;
-    static float     g_PlayTimer = 0.0f;  // seconds since last frame advance
-
-    // ── Layer list ──
-    static int       g_SelectedLayer = 0;
-    static vector<string> g_Layers = { "Layer 1", "Background" };
-
-    // ─────────────────────────────────────────────
-    // HELPERS
-    // ─────────────────────────────────────────────
-
-    static void PushUndoState() {
-        // Save current canvas pixels as an undo checkpoint
-        g_UndoStack.push_back(g_Canvas.Pixels());
-        if ((int)g_UndoStack.size() > MAX_UNDO)
-            g_UndoStack.erase(g_UndoStack.begin()); // drop oldest
-        g_RedoStack.clear(); // any new action clears the redo stack
-    }
-
-    static void DoUndo() {
-        if (g_UndoStack.empty()) return;
-        g_RedoStack.push_back(g_Canvas.Pixels()); // save for redo
-        g_Canvas.Pixels() = g_UndoStack.back();
-        g_UndoStack.pop_back();
-        g_Canvas.UploadTexture();
-    }
-
-    static void DoRedo() {
-        if (g_RedoStack.empty()) return;
-        g_UndoStack.push_back(g_Canvas.Pixels());
-        g_Canvas.Pixels() = g_RedoStack.back();
-        g_RedoStack.pop_back();
-        g_Canvas.UploadTexture();
-    }
-
-    // Expand the dirty rect to include a circle at (cx,cy) radius r
-    static void ExpandDirty(float cx, float cy, float r) {
-        int x0 = (int)(cx - r) - 1;
-        int y0 = (int)(cy - r) - 1;
-        int x1 = (int)(cx + r) + 1;
-        int y1 = (int)(cy + r) + 1;
-
-        if (!g_HasDirty) {
-            g_DirtyX0 = x0; g_DirtyY0 = y0;
-            g_DirtyX1 = x1; g_DirtyY1 = y1;
-            g_HasDirty = true;
+    static void expandDirty(float cx, float cy, float r) {
+        int x0 = (int)(cx - r) - 1, y0 = (int)(cy - r) - 1;
+        int x1 = (int)(cx + r) + 1, y1 = (int)(cy + r) + 1;
+        if (!g_Dirty) {
+            g_DX0 = x0; g_DY0 = y0; g_DX1 = x1; g_DY1 = y1;
+            g_Dirty = true;
         }
         else {
-            g_DirtyX0 = min(g_DirtyX0, x0);
-            g_DirtyY0 = min(g_DirtyY0, y0);
-            g_DirtyX1 = max(g_DirtyX1, x1);
-            g_DirtyY1 = max(g_DirtyY1, y1);
+            g_DX0 = min(g_DX0, x0); g_DY0 = min(g_DY0, y0);
+            g_DX1 = max(g_DX1, x1); g_DY1 = max(g_DY1, y1);
         }
     }
 
-    // Toolbar button: ghost by default, accent when active
-    static bool ToolButton(const char* label, ImVec2 size, bool isActive, ImVec4 accent) {
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            isActive ? accent : ImVec4(0.13f, 0.13f, 0.14f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            isActive ? accent : ImVec4(0.22f, 0.22f, 0.24f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-            ImVec4(accent.x * 0.8f, accent.y * 0.8f, accent.z * 0.8f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
-        bool clicked = ImGui::Button(label, size);
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-        return clicked;
+    static void flushDirty(Canvas* c) {
+        if (!g_Dirty || !c) return;
+        int x0 = max(0, g_DX0), y0 = max(0, g_DY0);
+        int x1 = min(c->Width() - 1, g_DX1), y1 = min(c->Height() - 1, g_DY1);
+        if (x1 > x0 && y1 > y0) c->UploadRegion(x0, y0, x1 - x0, y1 - y0);
+        g_Dirty = false;
     }
 
-    // Section header label
-    static void SectionHeader(const char* label) {
+    static bool toolBtn(const char* id, ImVec2 sz, bool active, ImVec4 acc) {
+        ImGui::PushStyleColor(ImGuiCol_Button, active ? acc : ImVec4(0.15f, 0.15f, 0.17f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? acc : ImVec4(0.22f, 0.22f, 0.25f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(acc.x * .8f, acc.y * .8f, acc.z * .8f, 1));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        bool hit = ImGui::Button(id, sz);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+        return hit;
+    }
+
+    static void sectionLabel(const char* t) {
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
-        ImGui::TextUnformatted(label);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(.42f, .42f, .46f, 1));
+        ImGui::TextUnformatted(t);
         ImGui::PopStyleColor();
-        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(.20f, .20f, .23f, 1));
         ImGui::Separator();
         ImGui::PopStyleColor();
         ImGui::Spacing();
     }
 
-    // ─────────────────────────────────────────────
-    // DRAWING LOGIC
-    // Called when mouse is pressed/dragged over the canvas
-    // ─────────────────────────────────────────────
+    static void applyStyle() {
+        ImGuiStyle& s = ImGui::GetStyle();
+        s.WindowRounding = 0;
+        s.ChildRounding = 3;
+        s.FrameRounding = 3;
+        s.GrabRounding = 2;
+        s.PopupRounding = 4;
+        s.TabRounding = 3;
+        s.WindowBorderSize = 0;
+        s.ChildBorderSize = 1;
+        s.FrameBorderSize = 0;
+        s.ItemSpacing = { 4, 4 };
+        s.FramePadding = { 7, 3 };
+        s.WindowPadding = { 8, 8 };
+        s.ScrollbarSize = 9;
+        s.IndentSpacing = 12;
 
-    static void HandleDrawInput(ImVec2 panelPos, ImVec2 panelSize, bool isPanning) {
+        auto* c = s.Colors;
+        auto  BG = [](float v) { return ImVec4(v, v, v + .01f, 1); };
+
+        c[ImGuiCol_WindowBg] = BG(.12f);
+        c[ImGuiCol_ChildBg] = BG(.08f);
+        c[ImGuiCol_PopupBg] = ImVec4(.13f, .13f, .14f, .97f);
+        c[ImGuiCol_Border] = ImVec4(.19f, .19f, .21f, 1);
+        c[ImGuiCol_FrameBg] = BG(.18f);
+        c[ImGuiCol_FrameBgHovered] = BG(.23f);
+        c[ImGuiCol_FrameBgActive] = BG(.25f);
+        c[ImGuiCol_TitleBg] = BG(.08f);
+        c[ImGuiCol_TitleBgActive] = BG(.10f);
+        c[ImGuiCol_MenuBarBg] = BG(.10f);
+        c[ImGuiCol_ScrollbarBg] = BG(.07f);
+        c[ImGuiCol_ScrollbarGrab] = BG(.28f);
+        c[ImGuiCol_ScrollbarGrabHovered] = BG(.34f);
+        c[ImGuiCol_ScrollbarGrabActive] = ImVec4(.28f, .50f, .92f, 1);
+        c[ImGuiCol_SliderGrab] = ImVec4(.28f, .50f, .92f, 1);
+        c[ImGuiCol_SliderGrabActive] = ImVec4(.36f, .58f, 1, 1);
+        c[ImGuiCol_CheckMark] = ImVec4(.28f, .50f, .92f, 1);
+        c[ImGuiCol_Button] = BG(.19f);
+        c[ImGuiCol_ButtonHovered] = BG(.26f);
+        c[ImGuiCol_ButtonActive] = ImVec4(.22f, .42f, .80f, .5f);
+        c[ImGuiCol_Header] = BG(.22f);
+        c[ImGuiCol_HeaderHovered] = ImVec4(.28f, .50f, .92f, .45f);
+        c[ImGuiCol_HeaderActive] = ImVec4(.28f, .50f, .92f, 1);
+        c[ImGuiCol_Separator] = ImVec4(.19f, .19f, .21f, 1);
+        c[ImGuiCol_Tab] = BG(.13f);
+        c[ImGuiCol_TabHovered] = BG(.26f);
+        c[ImGuiCol_TabActive] = BG(.20f);
+        c[ImGuiCol_Text] = ImVec4(.88f, .88f, .91f, 1);
+        c[ImGuiCol_TextDisabled] = ImVec4(.42f, .42f, .46f, 1);
+    }
+
+    static void handleDraw(ImVec2 ppos, ImVec2 psz, bool panning) {
+        auto* cur = g_TL.current();
+        if (!cur) return;
+
         ImGuiIO& io = ImGui::GetIO();
+        bool ldown = io.MouseDown[0];
+        bool inPanel = io.MousePos.x >= ppos.x && io.MousePos.x < ppos.x + psz.x
+            && io.MousePos.y >= ppos.y && io.MousePos.y < ppos.y + psz.y;
 
-        // Only draw with left mouse button, not while panning
-        bool leftDown = io.MouseDown[0];
-
-        // Is the mouse inside the viewport panel?
-        bool inPanel = (io.MousePos.x >= panelPos.x && io.MousePos.x < panelPos.x + panelSize.x &&
-            io.MousePos.y >= panelPos.y && io.MousePos.y < panelPos.y + panelSize.y);
-
-        if (!inPanel || isPanning) {
-            // End any active stroke if we left the panel
-            if (g_IsDrawing) {
-                // Upload dirty region to GPU when stroke ends
-                if (g_HasDirty) {
-                    // Clamp dirty rect to canvas bounds
-                    int cx0 = max(0, g_DirtyX0);
-                    int cy0 = max(0, g_DirtyY0);
-                    int cx1 = min(g_Canvas.Width() - 1, g_DirtyX1);
-                    int cy1 = min(g_Canvas.Height() - 1, g_DirtyY1);
-                    if (cx1 > cx0 && cy1 > cy0)
-                        g_Canvas.UploadRegion(cx0, cy0, cx1 - cx0, cy1 - cy0);
-                    g_HasDirty = false;
-                }
-                g_IsDrawing = false;
-                g_LastDrawPos = { -1, -1 };
-            }
+        if (!inPanel || panning) {
+            if (g_Drawing) { flushDirty(cur); g_Drawing = false; g_LastDrawPos = { -1,-1 }; }
             return;
         }
 
-        // Convert mouse from screen space to canvas space
-        ImVec2 canvasPos = g_Viewport.ScreenToCanvas(io.MousePos);
+        ImVec2 cp = g_VP.ScreenToCanvas(io.MousePos);
 
-        // ── Eyedropper: pick color on click ──
-        if (g_SelectedTool == 3 && ImGui::IsMouseClicked(0)) {
-            int px = (int)canvasPos.x;
-            int py = (int)canvasPos.y;
-            Pixel p = g_Canvas.GetPixel(px, py);
-            g_DrawColor = { p.r / 255.0f, p.g / 255.0f, p.b / 255.0f, 1.0f };
+        if (g_Tool == 3 && ImGui::IsMouseClicked(0)) {
+            Pixel p = cur->GetPixel((int)cp.x, (int)cp.y);
+            g_Color = { p.r / 255.f, p.g / 255.f, p.b / 255.f, 1 };
+            return;
+        }
+        if (g_Tool == 2 && ImGui::IsMouseClicked(0)) {
+            g_TL.pushUndo();
+            cur->FloodFill((int)cp.x, (int)cp.y,
+                (uint8_t)(g_Color.x * 255), (uint8_t)(g_Color.y * 255), (uint8_t)(g_Color.z * 255));
+            cur->UploadTexture();
             return;
         }
 
-        // ── Bucket fill: flood fill on click ──
-        if (g_SelectedTool == 2 && ImGui::IsMouseClicked(0)) {
-            PushUndoState();
-            g_Canvas.FloodFill(
-                (int)canvasPos.x, (int)canvasPos.y,
-                (uint8_t)(g_DrawColor.x * 255),
-                (uint8_t)(g_DrawColor.y * 255),
-                (uint8_t)(g_DrawColor.z * 255)
-            );
-            g_Canvas.UploadTexture();
-            return;
-        }
-
-        // ── Brush / Eraser: paint while held ──
-        bool isBrushTool = (g_SelectedTool == 0 || g_SelectedTool == 1);
-        if (!isBrushTool) return;
+        if (g_Tool != 0 && g_Tool != 1) return;
 
         if (ImGui::IsMouseClicked(0)) {
-            // Start of stroke — save undo state
-            PushUndoState();
-            g_IsDrawing = true;
-            g_LastDrawPos = canvasPos;
+            g_TL.pushUndo();
+            g_Drawing = true;
+            g_LastDrawPos = cp;
         }
 
-        if (g_IsDrawing && leftDown) {
-            // Interpolate between last position and current position
-            // This fills in the gaps when the mouse moves fast
-            // For Ivan: without interpolation, fast strokes look like dotted lines
-            float dx = canvasPos.x - g_LastDrawPos.x;
-            float dy = canvasPos.y - g_LastDrawPos.y;
+        if (g_Drawing && ldown) {
+            float dx = cp.x - g_LastDrawPos.x, dy = cp.y - g_LastDrawPos.y;
             float dist = sqrtf(dx * dx + dy * dy);
-
-            // Step size = half the brush radius (so circles overlap)
-            float stepSize = max(1.0f, g_BrushSize * 0.4f);
-            int   steps = max(1, (int)(dist / stepSize));
-
-            for (int i = 0; i <= steps; i++) {
-                float t = (steps > 0) ? (float)i / steps : 0.0f;
+            float step = max(1.0f, g_BrushSize * 0.4f);
+            int   n = max(1, (int)(dist / step));
+            for (int i = 0; i <= n; i++) {
+                float t = n > 0 ? (float)i / n : 0;
                 float px = g_LastDrawPos.x + dx * t;
                 float py = g_LastDrawPos.y + dy * t;
-
-                if (g_SelectedTool == 0) {
-                    g_Canvas.PaintCircle(px, py, g_BrushSize,
-                        g_Opacity,
-                        (uint8_t)(g_DrawColor.x * 255),
-                        (uint8_t)(g_DrawColor.y * 255),
-                        (uint8_t)(g_DrawColor.z * 255));
-                }
-                else {
-                    g_Canvas.EraseCircle(px, py, g_BrushSize, g_Opacity);
-                }
-                ExpandDirty(px, py, g_BrushSize);
+                if (g_Tool == 0)
+                    cur->PaintCircle(px, py, g_BrushSize, g_Opacity,
+                        (uint8_t)(g_Color.x * 255), (uint8_t)(g_Color.y * 255), (uint8_t)(g_Color.z * 255));
+                else
+                    cur->EraseCircle(px, py, g_BrushSize, g_Opacity);
+                expandDirty(px, py, g_BrushSize);
             }
-            g_LastDrawPos = canvasPos;
+            g_LastDrawPos = cp;
+            flushDirty(cur);
+        }
 
-            // Upload dirty region incrementally while drawing
-            // so the stroke appears on screen in real time
-            if (g_HasDirty) {
-                int cx0 = max(0, g_DirtyX0);
-                int cy0 = max(0, g_DirtyY0);
-                int cx1 = min(g_Canvas.Width() - 1, g_DirtyX1);
-                int cy1 = min(g_Canvas.Height() - 1, g_DirtyY1);
-                if (cx1 > cx0 && cy1 > cy0)
-                    g_Canvas.UploadRegion(cx0, cy0, cx1 - cx0, cy1 - cy0);
-                g_HasDirty = false;
+        if (!ldown && g_Drawing) { g_Drawing = false; g_LastDrawPos = { -1,-1 }; }
+    }
+
+    static void drawOnionSkins(ImDrawList* dl, const ImVec2& tl, const ImVec2& br) {
+        int cur = g_TL.currentFrame;
+
+        if (g_TL.onionBack) {
+            for (int d = 2; d >= 1; d--) {
+                Canvas* c = g_TL.at(cur - d);
+                if (!c) continue;
+                float a = g_TL.onionAlpha / (float)d;
+                dl->AddImage((ImTextureID)(uintptr_t)c->TextureID(), tl, br,
+                    { 0,0 }, { 1,1 }, ImColor(1.f, .35f, .35f, a));
             }
         }
 
-        if (!leftDown && g_IsDrawing) {
-            g_IsDrawing = false;
-            g_LastDrawPos = { -1, -1 };
+        if (g_TL.onionForward) {
+            Canvas* c = g_TL.at(cur + 1);
+            if (c)
+                dl->AddImage((ImTextureID)(uintptr_t)c->TextureID(), tl, br,
+                    { 0,0 }, { 1,1 }, ImColor(.35f, .55f, 1.f, g_TL.onionAlpha));
         }
     }
 
-    // ─────────────────────────────────────────────
-    // MAIN INTERFACE FUNCTION
-    // ─────────────────────────────────────────────
-
     void Engine::drawInterface() {
+        if (g_TL.frames.empty()) g_TL.addFrame(960, 540);
 
-        // ── One-time init ──
-        if (!g_CanvasInited) {
-            g_Canvas.Init(960, 540);
-            g_CanvasInited = true;
-        }
+        applyStyle();
 
-        // ── Process keyboard shortcuts ──
+        ImGuiIO& io = ImGui::GetIO();
         g_Input.Process();
 
-        // ── Handle shortcut actions ──
-        if (g_Input.Fired(Action::SelectBrush))      g_SelectedTool = 0;
-        if (g_Input.Fired(Action::SelectEraser))     g_SelectedTool = 1;
-        if (g_Input.Fired(Action::SelectBucket))     g_SelectedTool = 2;
-        if (g_Input.Fired(Action::SelectEyedropper)) g_SelectedTool = 3;
-        if (g_Input.Fired(Action::Undo))             DoUndo();
-        if (g_Input.Fired(Action::Redo))             DoRedo();
-        if (g_Input.Fired(Action::ClearFrame)) { PushUndoState(); g_Canvas.Clear(); g_Canvas.UploadTexture(); }
-        if (g_Input.Fired(Action::TogglePlay))       g_Playing = !g_Playing;
-        if (g_Input.Fired(Action::NextFrame)) { g_Playing = false; g_CurrentFrame = min(g_CurrentFrame + 1, g_TotalFrames - 1); }
-        if (g_Input.Fired(Action::PrevFrame)) { g_Playing = false; g_CurrentFrame = max(g_CurrentFrame - 1, 0); }
-        if (g_Input.Fired(Action::ZoomIn))  g_Viewport.ZoomAround(ImGui::GetIO().MousePos, 1.25f);
-        if (g_Input.Fired(Action::ZoomOut)) g_Viewport.ZoomAround(ImGui::GetIO().MousePos, 0.8f);
+        if (g_Input.Fired(Action::SelectBrush))      g_Tool = 0;
+        if (g_Input.Fired(Action::SelectEraser))     g_Tool = 1;
+        if (g_Input.Fired(Action::SelectBucket))     g_Tool = 2;
+        if (g_Input.Fired(Action::SelectEyedropper)) g_Tool = 3;
+        if (g_Input.Fired(Action::Undo))             g_TL.undo();
+        if (g_Input.Fired(Action::Redo))             g_TL.redo();
+        if (g_Input.Fired(Action::NextFrame)) { g_TL.playing = false; g_TL.next(); }
+        if (g_Input.Fired(Action::PrevFrame)) { g_TL.playing = false; g_TL.prev(); }
+        if (g_Input.Fired(Action::TogglePlay))       g_TL.playing = !g_TL.playing;
+        if (g_Input.Fired(Action::ZoomIn))           g_VP.ZoomAround(io.MousePos, 1.2f);
+        if (g_Input.Fired(Action::ZoomOut))          g_VP.ZoomAround(io.MousePos, 1.0f / 1.2f);
+        if (g_Input.Fired(Action::FitCanvas)) {
+            auto* c = g_TL.current();
+            if (c) g_VP.FitToPanel(c->Width(), c->Height());
+        }
+        if (g_Input.Fired(Action::ClearFrame)) {
+            auto* c = g_TL.current();
+            if (c) { g_TL.pushUndo(); c->Clear(); c->UploadTexture(); }
+        }
+        if (g_Input.Fired(Action::KillProcess)) exit(0);
 
-        // ── Playback timer ──
-        // io.DeltaTime = seconds since last frame (varies with frame rate)
-        // We accumulate it and advance the animation frame when it exceeds 1/fps
-        if (g_Playing) {
-            g_PlayTimer += ImGui::GetIO().DeltaTime;
-            float frameDuration = 1.0f / (float)g_FPS;
-            if (g_PlayTimer >= frameDuration) {
-                g_PlayTimer -= frameDuration;
-                g_CurrentFrame++;
-                if (g_CurrentFrame >= g_TotalFrames) {
-                    if (g_Looping) g_CurrentFrame = 0;
-                    else { g_CurrentFrame = g_TotalFrames - 1; g_Playing = false; }
-                }
-            }
+        g_TL.advance(io.DeltaTime);
+
+        float W = io.DisplaySize.x, H = io.DisplaySize.y;
+        float menuH = 19.f;
+        float toolW = 46.f;
+        float propW = 214.f;
+        float tlH = 175.f;
+        float viewW = W - toolW - propW;
+        float viewH = H - menuH - tlH;
+        ImVec2 vpos = { toolW, menuH };
+        ImVec2 vsz = { viewW, viewH };
+
+        ImVec4 acc = { .28f, .50f, .92f, 1 };
+        ImVec4 accDim = { .28f, .50f, .92f, .32f };
+        ImVec4 bg0 = { .07f, .07f, .08f, 1 };
+        ImVec4 bg1 = { .12f, .12f, .13f, 1 };
+        ImVec4 bg2 = { .18f, .18f, .19f, 1 };
+        ImVec4 bg3 = { .25f, .25f, .27f, 1 };
+        ImVec4 dim = { .42f, .42f, .46f, 1 };
+
+        g_VP.SetPanelBounds(vpos, vsz);
+        if (!g_VPFitted && g_TL.current()) {
+            g_VP.FitToPanel(g_TL.current()->Width(), g_TL.current()->Height());
+            g_VPFitted = true;
         }
 
-        // ─────────────────────────────────────────
-        // STYLE
-        // ─────────────────────────────────────────
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.WindowRounding = 0.0f;
-        style.ChildRounding = 4.0f;
-        style.FrameRounding = 3.0f;
-        style.GrabRounding = 3.0f;
-        style.PopupRounding = 4.0f;
-        style.ScrollbarRounding = 3.0f;
-        style.WindowBorderSize = 0.0f;
-        style.ChildBorderSize = 1.0f;
-        style.FrameBorderSize = 0.0f;
-        style.ItemSpacing = ImVec2(6.0f, 5.0f);
-        style.FramePadding = ImVec2(8.0f, 4.0f);
-        style.WindowPadding = ImVec2(8.0f, 8.0f);
-        style.ScrollbarSize = 10.0f;
+        bool panning = ImGui::IsMouseDown(ImGuiMouseButton_Middle)
+            || (ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+        bool overView = ImGui::IsMouseHoveringRect(vpos, { vpos.x + vsz.x, vpos.y + vsz.y });
 
-        ImVec4 accent = ImVec4(0.18f, 0.52f, 0.90f, 1.0f);
-        ImVec4 accentDim = ImVec4(0.18f, 0.52f, 0.90f, 0.35f);
-        ImVec4 bg0 = ImVec4(0.11f, 0.11f, 0.12f, 1.0f);
-        ImVec4 bg1 = ImVec4(0.15f, 0.15f, 0.16f, 1.0f);
-        ImVec4 bg2 = ImVec4(0.20f, 0.20f, 0.21f, 1.0f);
-        ImVec4 bg3 = ImVec4(0.26f, 0.26f, 0.28f, 1.0f);
-        ImVec4 textDim = ImVec4(0.50f, 0.50f, 0.54f, 1.0f);
-        ImVec4 border = ImVec4(0.22f, 0.22f, 0.24f, 1.0f);
-
-        ImVec4* c = style.Colors;
-        c[ImGuiCol_WindowBg] = bg1;
-        c[ImGuiCol_ChildBg] = bg0;
-        c[ImGuiCol_PopupBg] = ImVec4(0.13f, 0.13f, 0.14f, 0.97f);
-        c[ImGuiCol_Border] = border;
-        c[ImGuiCol_FrameBg] = bg2;
-        c[ImGuiCol_FrameBgHovered] = bg3;
-        c[ImGuiCol_FrameBgActive] = bg3;
-        c[ImGuiCol_TitleBg] = bg0;
-        c[ImGuiCol_TitleBgActive] = bg0;
-        c[ImGuiCol_MenuBarBg] = ImVec4(0.13f, 0.13f, 0.14f, 1.0f);
-        c[ImGuiCol_ScrollbarBg] = bg0;
-        c[ImGuiCol_ScrollbarGrab] = bg3;
-        c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.35f, 0.35f, 0.38f, 1.0f);
-        c[ImGuiCol_ScrollbarGrabActive] = accent;
-        c[ImGuiCol_CheckMark] = accent;
-        c[ImGuiCol_SliderGrab] = accent;
-        c[ImGuiCol_SliderGrabActive] = ImVec4(accent.x, accent.y, accent.z, 0.8f);
-        c[ImGuiCol_Button] = bg2;
-        c[ImGuiCol_ButtonHovered] = bg3;
-        c[ImGuiCol_ButtonActive] = accentDim;
-        c[ImGuiCol_Header] = accentDim;
-        c[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.50f);
-        c[ImGuiCol_HeaderActive] = accent;
-        c[ImGuiCol_Separator] = border;
-        c[ImGuiCol_Text] = ImVec4(0.88f, 0.88f, 0.90f, 1.0f);
-        c[ImGuiCol_TextDisabled] = textDim;
-
-        // ─────────────────────────────────────────
-        // LAYOUT
-        // ─────────────────────────────────────────
-        ImGuiIO& io = ImGui::GetIO();
-        float W = io.DisplaySize.x;
-        float H = io.DisplaySize.y;
-
-        float menuH = 19.0f;
-        float toolbarW = 44.0f;
-        float propW = 210.0f;
-        float timelineH = 170.0f;
-        float viewW = W - toolbarW - propW;
-        float viewH = H - menuH - timelineH;
-
-        ImVec2 viewPanelPos = ImVec2(toolbarW, menuH);
-        ImVec2 viewPanelSize = ImVec2(viewW, viewH);
-
-        // Tell the viewport where its panel is
-        g_Viewport.SetPanelBounds(viewPanelPos, viewPanelSize);
-
-        // Fit canvas to panel on first run
-        if (!g_ViewportFitted && g_CanvasInited) {
-            g_Viewport.FitToPanel(g_Canvas.Width(), g_Canvas.Height());
-            g_ViewportFitted = true;
-        }
-
-        // ─────────────────────────────────────────
-        // MENU BAR
-        // ─────────────────────────────────────────
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+        // ── MENU BAR ──
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 8,4 });
         if (ImGui::BeginMainMenuBar()) {
+            auto* cur = g_TL.current();
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("New Project", "Ctrl+N")) {}
-                if (ImGui::MenuItem("Open...", "Ctrl+O")) {}
+                ImGui::MenuItem("New", "Ctrl+N");
+                ImGui::MenuItem("Open", "Ctrl+O");
                 ImGui::Separator();
-                if (ImGui::MenuItem("Save", "Ctrl+S")) {}
-                if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) {}
+                ImGui::MenuItem("Save", "Ctrl+S");
+                ImGui::MenuItem("Save As", "Ctrl+Shift+S");
                 ImGui::Separator();
                 if (ImGui::BeginMenu("Export")) {
-                    if (ImGui::MenuItem("MP4 Video")) {}
-                    if (ImGui::MenuItem("WebM Video")) {}
-                    if (ImGui::MenuItem("GIF")) {}
-                    if (ImGui::MenuItem("Sprite Sheet")) {}
+                    ImGui::MenuItem("MP4");
+                    ImGui::MenuItem("GIF");
+                    ImGui::MenuItem("Sprite Sheet");
                     ImGui::EndMenu();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Exit", "Alt+F4")) { m_KeepRunning = false; }
+                if (ImGui::MenuItem("Exit")) m_KeepRunning = false;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
-                if (ImGui::MenuItem("Undo", "Ctrl+Z"))   DoUndo();
-                if (ImGui::MenuItem("Redo", "Ctrl+Y"))   DoRedo();
+                if (ImGui::MenuItem("Undo", "Ctrl+Z"))    g_TL.undo();
+                if (ImGui::MenuItem("Redo", "Ctrl+Y"))    g_TL.redo();
                 ImGui::Separator();
-                if (ImGui::MenuItem("Clear Frame", "Del")) { PushUndoState(); g_Canvas.Clear(); g_Canvas.UploadTexture(); }
+                if (ImGui::MenuItem("Clear Frame", "Del") && cur) { g_TL.pushUndo(); cur->Clear(); cur->UploadTexture(); }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
-                if (ImGui::MenuItem("Zoom In", "Ctrl++")) g_Viewport.ZoomAround(io.MousePos, 1.25f);
-                if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) g_Viewport.ZoomAround(io.MousePos, 0.8f);
-                if (ImGui::MenuItem("Fit to Window", "Ctrl+0")) g_Viewport.FitToPanel(g_Canvas.Width(), g_Canvas.Height());
+                if (ImGui::MenuItem("Zoom In", "Ctrl++")) g_VP.ZoomAround(io.MousePos, 1.2f);
+                if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) g_VP.ZoomAround(io.MousePos, 1.0f / 1.2f);
+                if (ImGui::MenuItem("Fit", "Ctrl+0") && cur) g_VP.FitToPanel(cur->Width(), cur->Height());
                 ImGui::EndMenu();
             }
-            // Right-aligned version string
-            float vw = ImGui::CalcTextSize("ANIMA  v1.0").x + 20.0f;
-            ImGui::SetCursorPosX(W - vw);
-            ImGui::PushStyleColor(ImGuiCol_Text, textDim);
-            ImGui::Text("ANIMA  v1.0");
+            ImGui::SetCursorPosX(W - ImGui::CalcTextSize("Anima  1.0").x - 18);
+            ImGui::PushStyleColor(ImGuiCol_Text, dim);
+            ImGui::Text("Anima  1.0");
             ImGui::PopStyleColor();
             ImGui::EndMainMenuBar();
         }
         ImGui::PopStyleVar();
 
-        // ─────────────────────────────────────────
-        // TOOLBAR
-        // ─────────────────────────────────────────
-        ImGui::SetNextWindowPos(ImVec2(0, menuH));
-        ImGui::SetNextWindowSize(ImVec2(toolbarW, viewH));
+        // ── TOOLBAR ──
+        ImGui::SetNextWindowPos({ 0, menuH });
+        ImGui::SetNextWindowSize({ toolW, viewH });
         ImGui::PushStyleColor(ImGuiCol_WindowBg, bg0);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 8));
-        ImGui::Begin("##toolbar", nullptr,
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 4,8 });
+        ImGui::Begin("##tb", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
 
-        struct ToolDef { const char* label; const char* tip; int id; };
-        ToolDef toolDefs[] = {
-            {"Br", "Brush (B)",       0},
-            {"Er", "Eraser (E)",      1},
-            {"Bk", "Bucket (G)",      2},
-            {"Ey", "Eyedropper (I)",  3},
-        };
-        for (auto& t : toolDefs) {
-            bool active = (g_SelectedTool == t.id);
-            if (active) {
+        struct TD { const char* lbl; const char* tip; int id; };
+        TD tools[] = { {"Br","Brush (B)",0},{"Er","Eraser (E)",1},{"Bk","Bucket (G)",2},{"Ey","Eyedrop (I)",3} };
+
+        for (auto& t : tools) {
+            bool act = g_Tool == t.id;
+            if (act) {
                 ImVec2 p = ImGui::GetCursorScreenPos();
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    ImVec2(p.x - 4, p.y), ImVec2(p.x - 1, p.y + 34),
-                    IM_COL32(46, 133, 230, 255));
+                ImGui::GetWindowDrawList()->AddRectFilled({ p.x - 4,p.y }, { p.x - 1,p.y + 34 }, IM_COL32(72, 130, 230, 255));
             }
-            if (ToolButton(t.label, ImVec2(36, 34), active, accent))
-                g_SelectedTool = t.id;
+            if (toolBtn(t.lbl, { 38,34 }, act, acc)) g_Tool = t.id;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.tip);
         }
 
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Separator, border); ImGui::Separator(); ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Separator, { .19f,.19f,.21f,1 }); ImGui::Separator(); ImGui::PopStyleColor();
         ImGui::Spacing();
 
-        if (ToolButton("Un", ImVec2(36, 28), false, accent)) DoUndo();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Undo (Ctrl+Z)");
-        if (ToolButton("Re", ImVec2(36, 28), false, accent)) DoRedo();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Redo (Ctrl+Y)");
+        if (toolBtn("Un", { 38,28 }, false, acc)) g_TL.undo();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Undo  Ctrl+Z");
+        if (toolBtn("Re", { 38,28 }, false, acc)) g_TL.redo();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Redo  Ctrl+Y");
 
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Separator, border); ImGui::Separator(); ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Separator, { .19f,.19f,.21f,1 }); ImGui::Separator(); ImGui::PopStyleColor();
         ImGui::Spacing();
 
-        // Color swatch
-        ImVec2 swatchPos = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##swatch", ImVec2(36, 36));
-        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##swatchpop");
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            swatchPos, ImVec2(swatchPos.x + 36, swatchPos.y + 36),
-            IM_COL32((int)(g_DrawColor.x * 255), (int)(g_DrawColor.y * 255), (int)(g_DrawColor.z * 255), 255), 4.0f);
-        ImGui::GetWindowDrawList()->AddRect(
-            swatchPos, ImVec2(swatchPos.x + 36, swatchPos.y + 36),
-            IM_COL32(80, 80, 86, 255), 4.0f);
-        if (ImGui::BeginPopup("##swatchpop")) {
-            ImGui::ColorPicker4("##cp", (float*)&g_DrawColor,
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##sw", { 38,38 });
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##swpop");
+        ImGui::GetWindowDrawList()->AddRectFilled(sp, { sp.x + 38,sp.y + 38 },
+            IM_COL32((int)(g_Color.x * 255), (int)(g_Color.y * 255), (int)(g_Color.z * 255), 255), 5);
+        ImGui::GetWindowDrawList()->AddRect(sp, { sp.x + 38,sp.y + 38 }, IM_COL32(70, 70, 78, 255), 5, 0, 1.5f);
+        if (ImGui::BeginPopup("##swpop")) {
+            ImGui::ColorPicker4("##cp", (float*)&g_Color,
                 ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_PickerHueWheel);
             ImGui::EndPopup();
         }
+
         ImGui::End();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
 
-        // ─────────────────────────────────────────
-        // VIEWPORT — this is where drawing happens
-        // ─────────────────────────────────────────
-        ImGui::SetNextWindowPos(viewPanelPos);
-        ImGui::SetNextWindowSize(viewPanelSize);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.09f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::Begin("##viewport", nullptr,
+        // ── VIEWPORT ──
+        ImGui::SetNextWindowPos(vpos);
+        ImGui::SetNextWindowSize(vsz);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, { .07f,.07f,.08f,1 });
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0,0 });
+        ImGui::Begin("##vp", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
 
-        ImDrawList* vdraw = ImGui::GetWindowDrawList();
+        g_VP.HandleInput(overView);
+        handleDraw(vpos, vsz, panning);
 
-        // Is the user panning right now? (space+drag or middle mouse)
-        bool spaceHeld = ImGui::IsKeyDown(ImGuiKey_Space);
-        bool middleMouse = io.MouseDown[2];
-        bool isPanning = spaceHeld || middleMouse;
+        ImDrawList* vdl = ImGui::GetWindowDrawList();
 
-        // Handle pan/zoom (Viewport reads mouse from ImGuiIO directly)
-        // We only allow it when the mouse is actually in the viewport
-        bool mouseInView = (io.MousePos.x >= viewPanelPos.x &&
-            io.MousePos.x < viewPanelPos.x + viewW &&
-            io.MousePos.y >= viewPanelPos.y &&
-            io.MousePos.y < viewPanelPos.y + viewH);
-        g_Viewport.HandleInput(mouseInView);
+        // Checkerboard
+        {
+            float ts = 14;
+            int tx = (int)(viewW / ts) + 2, ty = (int)(viewH / ts) + 2;
+            for (int r = 0; r < ty; r++)
+                for (int col = 0; col < tx; col++) {
+                    ImU32 col32 = (r + col) % 2 == 0 ? IM_COL32(20, 20, 22, 255) : IM_COL32(16, 16, 18, 255);
+                    vdl->AddRectFilled({ vpos.x + col * ts,vpos.y + r * ts }, { vpos.x + (col + 1) * ts,vpos.y + (r + 1) * ts }, col32);
+                }
+        }
 
-        // Handle brush/eraser drawing
-        HandleDrawInput(viewPanelPos, viewPanelSize, isPanning);
+        auto* cur = g_TL.current();
+        if (cur) {
+            ImVec2 tl = g_VP.CanvasToScreen({ 0,0 });
+            ImVec2 br = g_VP.CanvasToScreen({ (float)cur->Width(),(float)cur->Height() });
 
-        // Draw checkerboard background
-        float tileSize = 14.0f;
-        int tilesX = (int)(viewW / tileSize) + 2;
-        int tilesY = (int)(viewH / tileSize) + 2;
-        for (int ty = 0; ty < tilesY; ty++) {
-            for (int tx = 0; tx < tilesX; tx++) {
-                bool light = (tx + ty) % 2 == 0;
-                ImU32 tc = light ? IM_COL32(22, 22, 24, 255) : IM_COL32(18, 18, 20, 255);
-                vdraw->AddRectFilled(
-                    ImVec2(viewPanelPos.x + tx * tileSize, viewPanelPos.y + ty * tileSize),
-                    ImVec2(viewPanelPos.x + (tx + 1) * tileSize, viewPanelPos.y + (ty + 1) * tileSize),
-                    tc);
+            vdl->AddRectFilled({ tl.x + 5,tl.y + 5 }, { br.x + 5,br.y + 5 }, IM_COL32(0, 0, 0, 90), 3);
+
+            vdl->AddRectFilled(tl, br, IM_COL32(255, 255, 255, 255));
+
+            drawOnionSkins(vdl, tl, br);
+
+            vdl->AddImage((ImTextureID)(uintptr_t)cur->TextureID(), tl, br, { 0,0 }, { 1,1 });
+
+            vdl->AddRect({ tl.x - 1,tl.y - 1 }, { br.x + 1,br.y + 1 }, IM_COL32(55, 55, 65, 220), 0, 0, 1.5f);
+
+            if (overView && !panning && (g_Tool == 0 || g_Tool == 1)) {
+                float sr = g_BrushSize * g_VP.Zoom();
+                vdl->AddCircle(io.MousePos, sr, IM_COL32(200, 200, 210, 160), 48, 1.f);
+                vdl->AddCircleFilled(io.MousePos, 1.5f, IM_COL32(255, 255, 255, 220));
             }
+
+            char zbuf[12];
+            snprintf(zbuf, sizeof(zbuf), "%.0f%%", g_VP.Zoom() * 100);
+            ImVec2 zp = { vpos.x + viewW - 56, vpos.y + viewH - 26 };
+            vdl->AddRectFilled(zp, { zp.x + 48,zp.y + 18 }, IM_COL32(0, 0, 0, 130), 4);
+            vdl->AddText({ zp.x + 6,zp.y + 3 }, IM_COL32(180, 180, 200, 255), zbuf);
+
+            const char* tn[] = { "Brush","Eraser","Bucket","Eyedrop" };
+            char info[64];
+            snprintf(info, sizeof(info), "Fr %d/%d  %s  %.0fpx",
+                g_TL.currentFrame + 1, g_TL.frameCount(), tn[g_Tool], g_BrushSize);
+            float iw = ImGui::CalcTextSize(info).x + 14;
+            ImVec2 ip = { vpos.x + 10, vpos.y + 10 };
+            vdl->AddRectFilled(ip, { ip.x + iw,ip.y + 20 }, IM_COL32(0, 0, 0, 130), 4);
+            vdl->AddText({ ip.x + 7,ip.y + 4 }, IM_COL32(210, 210, 230, 240), info);
         }
 
-        // Draw the canvas texture
-        // CanvasToScreen converts the canvas corners to screen positions
-        // accounting for current pan and zoom
-        ImVec2 canvasTopLeft = g_Viewport.CanvasToScreen({ 0, 0 });
-        ImVec2 canvasTopLeft2 = g_Viewport.CanvasToScreen({ (float)g_Canvas.Width(), (float)g_Canvas.Height() });
-
-        // Drop shadow
-        vdraw->AddRectFilled(
-            ImVec2(canvasTopLeft.x + 6, canvasTopLeft.y + 6),
-            ImVec2(canvasTopLeft2.x + 6, canvasTopLeft2.y + 6),
-            IM_COL32(0, 0, 0, 100), 2.0f);
-
-        // Canvas image — ImTextureID is just the GL texture ID cast to a pointer
-        // Ivan: ImGui::Image takes top-left and bottom-right UV corners.
-        // UV (0,0) = top-left of texture, UV (1,1) = bottom-right.
-        vdraw->AddImage(
-            (ImTextureID)(uintptr_t)g_Canvas.TextureID(),
-            canvasTopLeft, canvasTopLeft2,
-            ImVec2(0, 0), ImVec2(1, 1));
-
-        // Canvas border
-        vdraw->AddRect(
-            ImVec2(canvasTopLeft.x - 1, canvasTopLeft.y - 1),
-            ImVec2(canvasTopLeft2.x + 1, canvasTopLeft2.y + 1),
-            IM_COL32(50, 50, 56, 255));
-
-        // Cursor preview — show brush size as a circle
-        if (mouseInView && !isPanning && (g_SelectedTool == 0 || g_SelectedTool == 1)) {
-            float screenRadius = g_BrushSize * g_Viewport.Zoom();
-            vdraw->AddCircle(io.MousePos, screenRadius,
-                IM_COL32(200, 200, 200, 180), 32, 1.0f);
-            // Small crosshair dot at center
-            vdraw->AddCircleFilled(io.MousePos, 2.0f, IM_COL32(255, 255, 255, 200));
-        }
-
-        // Zoom indicator
-        char zoomLabel[16];
-        snprintf(zoomLabel, sizeof(zoomLabel), "%.0f%%", g_Viewport.Zoom() * 100.0f);
-        ImVec2 zp = ImVec2(viewPanelPos.x + viewW - 50, viewPanelPos.y + viewH - 22);
-        vdraw->AddRectFilled(zp, ImVec2(zp.x + 42, zp.y + 16), IM_COL32(0, 0, 0, 100), 3.0f);
-        vdraw->AddText(ImVec2(zp.x + 4, zp.y + 2), IM_COL32(120, 120, 130, 255), zoomLabel);
-
-        // Frame / tool indicator
-        char infoLabel[48];
-        const char* toolNames[] = { "Brush","Eraser","Bucket","Eyedrop" };
-        snprintf(infoLabel, sizeof(infoLabel), "Fr %d/%d  |  %s  %.0fpx",
-            g_CurrentFrame + 1, g_TotalFrames, toolNames[g_SelectedTool], g_BrushSize);
-        float iw = ImGui::CalcTextSize(infoLabel).x + 10;
-        ImVec2 ip = ImVec2(viewPanelPos.x + 8, viewPanelPos.y + 8);
-        vdraw->AddRectFilled(ip, ImVec2(ip.x + iw, ip.y + 18), IM_COL32(0, 0, 0, 120), 3.0f);
-        vdraw->AddText(ImVec2(ip.x + 5, ip.y + 3), IM_COL32(180, 180, 190, 200), infoLabel);
-
-        // Cursor: hide system cursor when over canvas
-        if (mouseInView) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        if (overView) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
 
         ImGui::End();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
 
-        // ─────────────────────────────────────────
-        // PROPERTIES PANEL
-        // ─────────────────────────────────────────
-        ImGui::SetNextWindowPos(ImVec2(toolbarW + viewW, menuH));
-        ImGui::SetNextWindowSize(ImVec2(propW, viewH));
+        // ── PROPERTIES ──
+        ImGui::SetNextWindowPos({ toolW + viewW, menuH });
+        ImGui::SetNextWindowSize({ propW, viewH });
         ImGui::PushStyleColor(ImGuiCol_WindowBg, bg1);
-        ImGui::Begin("##props", nullptr,
+        ImGui::Begin("##pr", nullptr,
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-        SectionHeader("BRUSH");
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, bg2);
+        sectionLabel("BRUSH");
         ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("##size", &g_BrushSize, 1.0f, 100.0f, "Size: %.0fpx");
+        ImGui::SliderFloat("##sz", &g_BrushSize, 1, 100, "Size  %.0fpx");
         ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("##opacity", &g_Opacity, 0.0f, 1.0f, "Opacity: %.0f%%");
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("##smooth", &g_Smoothing, 0.0f, 1.0f, "Smooth: %.0f%%");
-        ImGui::PopStyleColor();
+        ImGui::SliderFloat("##op", &g_Opacity, 0, 1, "Opacity  %.0f%%");
 
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(g_DrawColor.x, g_DrawColor.y, g_DrawColor.z, 1.0f));
-        ImGui::BeginChild("##colorbar", ImVec2(-1, 22), false);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, { g_Color.x,g_Color.y,g_Color.z,1 });
+        ImGui::BeginChild("##cb", { -1,20 }, false);
         ImGui::EndChild();
         ImGui::PopStyleColor();
-        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##propcolor");
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##pcp");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to change color");
-        if (ImGui::BeginPopup("##propcolor")) {
-            ImGui::ColorPicker4("##pp", (float*)&g_DrawColor,
+        if (ImGui::BeginPopup("##pcp")) {
+            ImGui::ColorPicker4("##pp", (float*)&g_Color,
                 ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_PickerHueWheel);
             ImGui::EndPopup();
         }
 
-        SectionHeader("LAYERS");
-        ImGui::PushStyleColor(ImGuiCol_Button, accentDim);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
-        if (ImGui::Button("+ Add Layer", ImVec2(-1, 22))) {
-            g_Layers.insert(g_Layers.begin(), "Layer " + to_string(g_Layers.size() + 1));
-            g_SelectedLayer = 0;
+        sectionLabel("ONION SKIN");
+        ImGui::Checkbox("Past (red)", &g_TL.onionBack);
+        ImGui::Checkbox("Future (blue)", &g_TL.onionForward);
+        ImGui::SetNextItemWidth(-1);
+        ImGui::SliderFloat("##oa", &g_TL.onionAlpha, .02f, .6f, "Intensity  %.2f");
+
+        sectionLabel("FRAME");
+        if (ImGui::Button("+ Add", { -1,22 })) {
+            auto* c = g_TL.current();
+            g_TL.addFrame(c ? c->Width() : 960, c ? c->Height() : 540);
+            g_TL.currentFrame = g_TL.frameCount() - 1;
         }
-        ImGui::PopStyleColor(2);
-        ImGui::Spacing();
+        if (ImGui::Button("Duplicate", { -1,22 }))
+            g_TL.duplicateFrame(g_TL.currentFrame);
+        if (ImGui::Button("Delete", { -1,22 }))
+            g_TL.deleteFrame(g_TL.currentFrame);
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, bg0);
-        ImGui::BeginChild("##layerlist", ImVec2(-1, 120), true);
-        for (int i = 0; i < (int)g_Layers.size(); i++) {
-            bool sel = (g_SelectedLayer == i);
-            ImGui::GetWindowDrawList()->AddCircleFilled(
-                ImVec2(ImGui::GetCursorScreenPos().x + 6, ImGui::GetCursorScreenPos().y + 9),
-                4.0f, IM_COL32(60, 200, 100, 200));
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 18);
-            ImGui::PushStyleColor(ImGuiCol_Header, accentDim);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(accent.x, accent.y, accent.z, 0.3f));
-            if (ImGui::Selectable(g_Layers[i].c_str(), sel)) g_SelectedLayer = i;
-            ImGui::PopStyleColor(2);
+        sectionLabel("CANVAS");
+        {
+            auto* c = g_TL.current();
+            ImGui::PushStyleColor(ImGuiCol_Text, dim);
+            if (c) ImGui::Text("%d × %d  |  %.0f%%", c->Width(), c->Height(), g_VP.Zoom() * 100);
+            ImGui::Text("Frames: %d  |  FPS: %d", g_TL.frameCount(), g_TL.fps);
+            ImGui::PopStyleColor();
         }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
 
-        SectionHeader("CANVAS");
-        ImGui::PushStyleColor(ImGuiCol_Text, textDim);
-        ImGui::Text("%d x %d  |  %.0f%%", g_Canvas.Width(), g_Canvas.Height(), g_Viewport.Zoom() * 100.0f);
-        ImGui::Text("FPS: %d  |  Frames: %d", g_FPS, g_TotalFrames);
-        ImGui::PopStyleColor();
-
-        // Keyboard shortcut reference
-        SectionHeader("SHORTCUTS");
-        ImGui::PushStyleColor(ImGuiCol_Text, textDim);
-        ImGui::TextWrapped("B Brush  E Eraser  G Bucket  I Eyedrop\n"
-            "Space Play  ←/→ Frame\n"
-            "Scroll Zoom  Mid/Space+Drag Pan\n"
-            "Ctrl+Z Undo  Ctrl+Y Redo");
+        sectionLabel("KEYS");
+        ImGui::PushStyleColor(ImGuiCol_Text, dim);
+        ImGui::TextWrapped("B Brush  E Eraser  G Bucket  I Pick\n"
+            "Space Play  ← → Frame\n"
+            "Scroll/Ctrl+/-  Zoom\n"
+            "Mid / Space+Drag  Pan\n"
+            "Ctrl+Z/Y  Undo/Redo");
         ImGui::PopStyleColor();
 
         ImGui::End();
         ImGui::PopStyleColor();
 
-        // ─────────────────────────────────────────
-        // TIMELINE
-        // ─────────────────────────────────────────
-        ImGui::SetNextWindowPos(ImVec2(0, menuH + viewH));
-        ImGui::SetNextWindowSize(ImVec2(W, timelineH));
+        // ── TIMELINE ──
+        ImGui::SetNextWindowPos({ 0, menuH + viewH });
+        ImGui::SetNextWindowSize({ W, tlH });
         ImGui::PushStyleColor(ImGuiCol_WindowBg, bg0);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
-        ImGui::Begin("##timeline", nullptr,
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 8,6 });
+        ImGui::Begin("##tl", nullptr,
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-        // Accent top border
-        ImVec2 tlPos = ImGui::GetWindowPos();
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(tlPos.x, tlPos.y),
-            ImVec2(tlPos.x + W, tlPos.y),
-            IM_COL32(46, 133, 230, 180), 1.5f);
+        ImVec2 tlp = ImGui::GetWindowPos();
+        ImGui::GetWindowDrawList()->AddLine(tlp, { tlp.x + W,tlp.y }, IM_COL32(60, 110, 220, 160), 1.5f);
 
         ImGui::Spacing();
 
-        // Play button
-        ImGui::PushStyleColor(ImGuiCol_Button, g_Playing ? accent : bg2);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent);
-        if (ImGui::Button(g_Playing ? " || " : "  >  ", ImVec2(42, 24)))
-            g_Playing = !g_Playing;
+        ImGui::PushStyleColor(ImGuiCol_Button, g_TL.playing ? acc : bg2);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, acc);
+        if (ImGui::Button(g_TL.playing ? " || " : "  >  ", { 44,26 })) g_TL.playing = !g_TL.playing;
         ImGui::PopStyleColor(2);
         ImGui::SameLine();
 
-        // Seeker
-        ImGui::PushStyleColor(ImGuiCol_SliderGrab, accent);
-        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(accent.x, accent.y, accent.z, 0.8f));
         ImGui::PushStyleColor(ImGuiCol_FrameBg, bg2);
-        ImGui::SetNextItemWidth(W - 310.0f);
-        float seekF = (float)g_CurrentFrame;
-        if (ImGui::SliderFloat("##seek", &seekF, 0.0f, (float)(g_TotalFrames - 1), ""))
-            g_CurrentFrame = (int)seekF;
-        ImGui::PopStyleColor(3);
+        ImGui::SetNextItemWidth(W - 320);
+        int seeker = g_TL.currentFrame;
+        if (ImGui::SliderInt("##sk", &seeker, 0, max(0, g_TL.frameCount() - 1), "")) {
+            g_TL.currentFrame = seeker;
+            g_TL.playing = false;
+        }
+        ImGui::PopStyleColor();
 
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, textDim);
-        ImGui::Text("%03d / %03d", g_CurrentFrame + 1, g_TotalFrames);
+        ImGui::PushStyleColor(ImGuiCol_Text, dim);
+        ImGui::Text("%03d / %03d", g_TL.currentFrame + 1, g_TL.frameCount());
         ImGui::PopStyleColor();
-        ImGui::SameLine(0, 20);
-        ImGui::PushStyleColor(ImGuiCol_Text, textDim);
-        ImGui::Text("FPS");
-        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 16);
+        ImGui::PushStyleColor(ImGuiCol_Text, dim); ImGui::Text("FPS"); ImGui::PopStyleColor();
         ImGui::SameLine(0, 4);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, bg2);
         ImGui::SetNextItemWidth(36);
-        ImGui::InputInt("##fps", &g_FPS, 0, 0);
+        ImGui::InputInt("##fp", &g_TL.fps, 0, 0);
         ImGui::PopStyleColor();
-        g_FPS = max(1, min(g_FPS, 60));
-        ImGui::SameLine(0, 16);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, bg2);
-        ImGui::PushStyleColor(ImGuiCol_CheckMark, accent);
-        ImGui::Checkbox("Loop", &g_Looping);
-        ImGui::PopStyleColor(2);
+        g_TL.fps = clamp(g_TL.fps, 1, 120);
+        ImGui::SameLine(0, 14);
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, acc);
+        ImGui::Checkbox("Loop", &g_TL.looping);
+        ImGui::PopStyleColor();
 
         ImGui::Spacing();
 
-        // Frame strip
         ImGui::PushStyleColor(ImGuiCol_ChildBg, bg0);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 0));
-        ImGui::BeginChild("##frames", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-        for (int i = 0; i < g_TotalFrames; i++) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, { 2,0 });
+        ImGui::BeginChild("##fs", { 0,0 }, false, ImGuiWindowFlags_HorizontalScrollbar);
+
+        int fc = g_TL.frameCount();
+        for (int i = 0; i < fc; i++) {
             if (i > 0) ImGui::SameLine(0, 2);
-            bool isCur = (g_CurrentFrame == i);
-            bool hasData = (i == 0); // placeholder — replace with real frame check
-            ImVec4 bc = isCur ? accent
-                : hasData ? ImVec4(0.28f, 0.28f, 0.30f, 1.0f)
-                : ImVec4(0.14f, 0.14f, 0.15f, 1.0f);
+            bool isc = (g_TL.currentFrame == i);
+            Canvas* fc_c = g_TL.at(i);
+            bool has = fc_c != nullptr;
+
+            ImVec4 bc = isc ? acc : (has ? ImVec4(.26f, .26f, .29f, 1) : ImVec4(.13f, .13f, .15f, 1));
             ImGui::PushStyleColor(ImGuiCol_Button, bc);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, isCur ? accent : bg3);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
-            char lbl[8]; snprintf(lbl, sizeof(lbl), "##f%d", i);
-            if (ImGui::Button(lbl, ImVec2(22, 52))) { g_CurrentFrame = i; g_Playing = false; }
-            ImVec2 bpos = ImGui::GetItemRectMin();
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, isc ? acc : bg3);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2);
+
+            char lbl[12]; snprintf(lbl, sizeof(lbl), "##f%d", i);
+            if (ImGui::Button(lbl, { 24,56 })) { g_TL.currentFrame = i; g_TL.playing = false; }
+
+            ImVec2 bp = ImGui::GetItemRectMin();
             if (i % 5 == 0) {
-                char num[6]; snprintf(num, sizeof(num), "%d", i);
-                ImGui::GetWindowDrawList()->AddText(
-                    ImVec2(bpos.x + 3, bpos.y + 36),
-                    isCur ? IM_COL32(255, 255, 255, 220) : IM_COL32(90, 90, 100, 255), num);
+                char n[6]; snprintf(n, sizeof(n), "%d", i);
+                ImGui::GetWindowDrawList()->AddText({ bp.x + 3,bp.y + 38 },
+                    isc ? IM_COL32(255, 255, 255, 220) : IM_COL32(80, 80, 95, 255), n);
             }
-            if (hasData && !isCur)
-                ImGui::GetWindowDrawList()->AddCircleFilled(
-                    ImVec2(bpos.x + 11, bpos.y + 16), 3.0f, IM_COL32(100, 160, 255, 200));
+            if (has && !isc)
+                ImGui::GetWindowDrawList()->AddCircleFilled({ bp.x + 12,bp.y + 15 }, 3, IM_COL32(90, 150, 255, 200));
+
+            if (i == g_TL.onionBack ? g_TL.currentFrame - 1 : -99)
+                ImGui::GetWindowDrawList()->AddRect({ bp.x,bp.y }, { bp.x + 24,bp.y + 56 }, IM_COL32(255, 90, 90, 160), 2);
+            if (i == (g_TL.onionForward ? g_TL.currentFrame + 1 : -99))
+                ImGui::GetWindowDrawList()->AddRect({ bp.x,bp.y }, { bp.x + 24,bp.y + 56 }, IM_COL32(90, 130, 255, 160), 2);
+
             ImGui::PopStyleVar();
             ImGui::PopStyleColor(2);
         }
+
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();

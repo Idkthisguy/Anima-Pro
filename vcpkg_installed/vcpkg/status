@@ -1,0 +1,51 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 2e283af87217fd0175493fe6007980e6aaa49e50f21cdd18b1dab0c726236b91
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 778f36b1f46d7294df6cd51413bdc7fa53049ebec86813df7052f90875e306be
+Status: install ok installed
+
+Package: glm
+Version: 1.0.3
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: e4dcc734e19dd16739c00d4b4e1a4b709f8e43b7f2c414e89d5d8ffd1e8d8f27
+Description: OpenGL Mathematics (GLM)
+Status: install ok installed
+
+Package: imgui
+Version: 1.92.6
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: de5269a63d0d497c122d8223a21f41c7b815e4ba2a10d5d7359add4854039070
+Description: Bloat-free Immediate Mode Graphical User interface for C++ with minimal dependencies.
+Status: install ok installed
+
+Package: nlohmann-json
+Version: 3.12.0
+Port-Version: 2
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b6751fade57c9a4376b85577c09b89c1d0c6fb2011983a4b3b9bfe5cc6d416b2
+Description: JSON for Modern C++
+Status: install ok installed
+
+Package: sdl2
+Version: 2.32.10
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b05cf80feb90edff0df13f6176e8fa6e1ef12985794d921bbc4d64114afb5e05
+Description: Simple DirectMedia Layer is a cross-platform development library designed to provide low level access to audio, keyboard, mouse, joystick, and graphics hardware via OpenGL and Direct3D.
+Status: install ok installed
+

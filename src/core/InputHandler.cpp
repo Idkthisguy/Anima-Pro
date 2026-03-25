@@ -14,8 +14,6 @@ namespace Anima {
     }
 
     void InputHandler::Fire(Action a) {
-        // Set the bit for this action
-        // Ivan: bit shifting — (1 << n) puts a 1 at position n
         m_FiredActions |= (1ULL << (int)a);
     }
 
@@ -31,6 +29,7 @@ namespace Anima {
         m_Ctrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
         m_Shift = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
         m_Alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+		m_Esc = ImGui::IsKeyDown(ImGuiKey_Escape);
 
         // Don't fire shortcuts when typing in an input field
         // ImGui::GetIO().WantCaptureKeyboard is true when text input is focused
@@ -67,6 +66,8 @@ namespace Anima {
         if (m_Ctrl && JustPressed(ImGuiKey_O))              Fire(Action::OpenProject);
         if (m_Ctrl && JustPressed(ImGuiKey_S) && !m_Shift) Fire(Action::Save);
         if (m_Ctrl && JustPressed(ImGuiKey_S) && m_Shift) Fire(Action::SaveAs);
+
+        if (m_Esc && JustPressed(ImGuiKey_K)) Fire(Action::KillProcess);
     }
 
 } // namespace Anima

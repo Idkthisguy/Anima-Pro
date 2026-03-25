@@ -1,75 +1,39 @@
 ﻿#pragma once
-#include "Anima.h"
-#include <SDL.h>
-#include <SDL_opengl.h>
-#include "imgui.h"
+#include <string>
+
+// These are "Forward Declarations"
+// It's like saying "I'll have a steering wheel later, just know it exists for now."
+struct SDL_Window;
+typedef void* SDL_GLContext;
 
 namespace Anima {
-	struct Engine::internalGears {
-		SDL_Window* window;
-		SDL_GLContext glContext = nullptr;
-		
-		float deltaTime = 0.0f;
-		uint64_t lastFrameTime = 0;
-	};
+    class Engine {
+    public:
+        Engine();
+        ~Engine();
 
-	void Engine::freeUnusedMemory() {
-		if (gears->isPowerSaving) return;
+        // Starts the engine (Startup)
+        bool Startup(const std::string& name, int w, int h);
 
-		saveToTempCache("temp_session.bak");
+        // Checks if the car is still driving
+        bool IsRunning() const { return m_KeepRunning; }
 
-		undoStack.clear();
-		undoStack.shrink_to_fit();
+        void syncInput();      // Grabs the steering wheel and pedal input
+        void BeginFrame();     // Starts a new drawing frame
+        void drawInterface();  // Draws the ImGui buttons
+        void EndFrame();       // Swaps the drawing to the screen
+        void shutdown();       // Parks the car and turns off the lights
 
-		if (gears->canvasTextureID != 0) {
-			glDeleteTextures(1, &gears->canvasTextureID);
-			gears->canvasTextureID = 0;
-		}
+        // --- Your New 2026 Power-Saving Features ---
+        void update(float deltaTime);   // The heartbeat of the app
+        void freeUnusedMemory();        // The "Sleep Mode" to save RAM/Disk
+        void reloadResources();         // Waking back up when the user moves the mouse
 
-		gears->isPowerSaving = true;
-		printf("Anima: Memory Released. Entering Sleep Mode.\n");
-	}
+    private:
+        bool m_KeepRunning; // Is the engine on?
 
-	void Engine::reloadResources() {
-		if (!gears->isPowerSaving) return;
-
-		loadFromTempCache("temp_session.bak");
-
-		gears->canvasTextureID = createTextureFromPixels(currentCanvasPixels);
-
-		gears->isPowerSaving = false;
-		printf("Anima: Resources Reloaded. Waking up!\n");
-	}
-
-	float idleTime = 0.0f; 
-	bool highMemoryMode = true;
-
-	void Engine::update(float deltaTime) {
-		ImGuiIO& io = ImGui::GetIO();
-
-		bool userActive = (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || io.InputQueueCharacters.Size > 0 || io.MouseDown[0]);
-
-		if (userActive) {
-			idleTime = 0.0f;
-			if (!highMemoryMode) {
-				highMemoryMode = true;
-				reloadResources();
-				SDL_GL_SetSwapInterval(1);
-			}
-		}
-		else {
-			idleTime += deltaTime;
-		}
-
-		if (idleTime > 5.0f && highMemoryMode) {
-			highMemoryMode = false;
-			freeUnusedMemory();
-
-			SDL_GL_SetSwapInterval(0);
-		}
-
-		if (!highMemoryMode) {
-			SDL_Delay(100);
-		}
-	}
+        // "internalGears" holds the heavy machinery hidden from the user
+        struct internalGears;
+        internalGears* m_Gears;
+    };
 }
