@@ -2,8 +2,9 @@
 
 project(Anima)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(imgui CONFIG REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
@@ -14,10 +15,16 @@ add_executable(Anima WIN32
     # Entry point
     ../apps/main.cpp
 
-    # Core source files
-    
+    # Core
     core/Engine.cpp
-    ui/Styles.cpp
+
+    # Drawing system
+    "ui/Canvas.cpp"
+    ui/Viewport.cpp
+    core/InputHandler.cpp
+
+    # UI
+    "ui/Styles.cpp"
 
     # Resources
     resources/resources.rc
@@ -25,18 +32,19 @@ add_executable(Anima WIN32
     # imgui backends
     ../extern/imgui_impl_sdl2.cpp
     ../extern/imgui_impl_opengl3.cpp
-)
-
+ "timeline/Timeline.cpp"  )
 target_include_directories(Anima PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
 )
 
 target_link_libraries(Anima PRIVATE
     imgui::imgui
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    SDL2::SDL2
     glm::glm
     nlohmann_json::nlohmann_json
     opengl32

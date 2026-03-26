@@ -6,6 +6,8 @@
     "imgui",
     "sdl2",
     "glm",
-    "nlohmann-json"
+    "nlohmann-json",
+    "stb",
+    "spdlog"
   ]
 }

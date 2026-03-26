@@ -11,6 +11,7 @@ namespace Anima {
 
 		~Engine();
 
+
 		bool Startup(const std::string& name, int w, int h);
 		bool IsRunning() const { return m_KeepRunning; }
 
